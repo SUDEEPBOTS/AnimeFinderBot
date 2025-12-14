@@ -1,4 +1,8 @@
+# Dependencies
 pyrogram
 pymongo
 google-genai
-python-dotenv 
+python-dotenv
+flask
+TgCrypto
+
