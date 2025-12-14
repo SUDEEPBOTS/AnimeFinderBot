@@ -46,7 +46,7 @@ app = Client(
 
 try:
     gemini_client = genai.Client(api_key=GEMINI_API_KEY)
-    GEMINI_MODEL = "gemini-2.0-flash"
+    GEMINI_MODEL = "gemini-2.5-flash"
     print("✅ Gemini Client initialized.")
 except Exception as e:
     print(f"❌ Gemini Error: {e}")
