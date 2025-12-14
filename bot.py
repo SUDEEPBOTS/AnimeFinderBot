@@ -14,11 +14,11 @@ from db import (
 )
 from config import (
     ADMIN_START_MESSAGE, USER_WELCOME, USER_NOT_FOUND, USER_BROADCAST_ALERT,
-    ADMIN_PROMPT_NAME, ADMIN_PROMPT_LINK, ADMIN_FINAL_INSTRUCTION,
+    ADMIN_PROMPT_NAME, ADMIN_FINAL_INSTRUCTION, # ADMIN_PROMPT_LINK hata diya
     ADMIN_SUCCESS, ADMIN_FAIL, GEMINI_SEARCH_PROMPT
 )
 
-# --- 1. FLASK WEB SERVER (Render Fix) ---
+# --- 1. FLASK WEB SERVER ---
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
@@ -29,7 +29,7 @@ def run_web_server():
     port = int(os.environ.get("PORT", 8080))
     flask_app.run(host="0.0.0.0", port=port)
 
-# --- 2. CONFIGURATION & CLIENTS ---
+# --- 2. CONFIGURATION ---
 API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -46,7 +46,7 @@ app = Client(
 
 try:
     gemini_client = genai.Client(api_key=GEMINI_API_KEY)
-    GEMINI_MODEL = "gemini-2.5-flash"
+    GEMINI_MODEL = "gemini-2.0-flash"
     print("✅ Gemini Client initialized.")
 except Exception as e:
     print(f"❌ Gemini Error: {e}")
@@ -56,7 +56,7 @@ ADMIN_STATE = {}
 # --- 3. HELPER FUNCTIONS ---
 
 async def auto_delete_message(chat_id: int, message_id: int):
-    """Message ko 15 minutes ke baad delete karta hai."""
+    """15 min baad message delete."""
     await asyncio.sleep(15 * 60)
     try:
         await app.delete_messages(chat_id, message_id)
@@ -64,10 +64,12 @@ async def auto_delete_message(chat_id: int, message_id: int):
         pass
 
 async def broadcast_new_anime(client, anime_name: str, channel_post_id: int):
+    """Users ko notify karna."""
     users = get_all_users()
     count = 0
     for user_id in users:
         try:
+            # Sirf message copy kar rahe hain, link uske andar hi hai
             await client.copy_message(
                 chat_id=user_id,
                 from_chat_id=CHANNEL_ID,
@@ -82,7 +84,6 @@ async def broadcast_new_anime(client, anime_name: str, channel_post_id: int):
 
 # --- 4. BOT HANDLERS ---
 
-# Fixed: Added 'filters.incoming' to stop self-reply
 @app.on_message(filters.command("start") & filters.private & filters.incoming)
 async def start_command(client, message):
     user_id = message.from_user.id
@@ -96,102 +97,120 @@ async def start_command(client, message):
     else:
         await message.reply_text(USER_WELCOME)
 
-# --- ADMIN FLOW ---
+# --- ADMIN FLOW (Sirf Name lega) ---
 
 @app.on_callback_query(filters.regex("^add_anime_start$"))
 async def add_anime_start_callback(client, callback_query):
     if callback_query.from_user.id != ADMIN_ID: return
-    
-    ADMIN_STATE[ADMIN_ID] = {"step": "awaiting_name", "data": {}}
+    ADMIN_STATE[ADMIN_ID] = {"step": "awaiting_name"}
     await callback_query.edit_message_text(ADMIN_PROMPT_NAME)
 
-# Fixed: Added 'filters.incoming'
 @app.on_message(filters.text & filters.private & filters.incoming & filters.user(ADMIN_ID))
 async def admin_input_handler(client, message):
     if message.from_user.id not in ADMIN_STATE:
-        # Agar admin flow mein nahi hai, toh search handler par jaane do
         return await message.continue_propagation()
 
     state = ADMIN_STATE[ADMIN_ID]
     text = message.text.strip()
 
     if state["step"] == "awaiting_name":
-        state["data"]["anime_name"] = text
-        state["step"] = "awaiting_link"
-        await message.reply_text(ADMIN_PROMPT_LINK)
+        anime_name = text
+        # Link ab channel post mein hoga, yahan nahi mangna
         
-    elif state["step"] == "awaiting_link":
-        anime_name = state["data"]["anime_name"]
-        view_link = text
+        # Temp ID generate
         temp_id = f"ANIME-{os.urandom(3).hex().upper()}"
         
-        add_anime_record(anime_name, 0, view_link, temp_id)
+        # DB mein save (link=None kyunki link post mein hai)
+        add_anime_record(anime_name, 0, "Link_in_Post", temp_id)
+        
         del ADMIN_STATE[ADMIN_ID]
         
-        await message.reply_text(ADMIN_FINAL_INSTRUCTION.format(temp_id=temp_id))
+        # Admin ko bolo code channel me dale
+        instruction = (
+            f"✅ **Anime Name:** {anime_name}\n\n"
+            f"🚀 **Next Step:**\n"
+            f"1. Channel par Photo upload karein.\n"
+            f"2. Caption mein Title aur Link likhein.\n"
+            f"3. Caption ke **END** mein ye code paste karein:\n\n"
+            f"`|{temp_id}|`\n\n"
+            f"(Bot automatic code detect karke delete kar dega)"
+        )
+        await message.reply_text(instruction)
 
-# --- CHANNEL MONITOR ---
+# --- CHANNEL MONITOR (Code Detect & Broadcast) ---
 
-@app.on_message(filters.chat(CHANNEL_ID) & filters.text)
+@app.on_message(filters.chat(CHANNEL_ID) & filters.caption)
 async def channel_post_monitor(client, message):
-    match = re.search(r'\|(ANIME-[A-Z0-9]+)\|', message.text)
+    # Caption mein code dhoondho
+    caption = message.caption or ""
+    match = re.search(r'\|(ANIME-[A-Z0-9]+)\|', caption)
     
     if match:
         temp_id = match.group(1)
+        full_code = match.group(0) # |ANIME-XXXX|
+        
         record = find_anime_by_temp_id(temp_id)
         
         if record:
+            # 1. DB Update
             anime_collection.update_one(
                 {"_id": record["_id"]},
                 {"$set": {"channel_post_id": message.id}, "$unset": {"temp_id": ""}}
             )
+            
+            # 2. Code ko Caption se REMOVE kar do (Edit Message)
+            new_caption = caption.replace(full_code, "").strip()
+            try:
+                await client.edit_message_caption(
+                    chat_id=CHANNEL_ID,
+                    message_id=message.id,
+                    caption=new_caption
+                )
+            except Exception as e:
+                print(f"Caption edit error: {e}")
+
+            # 3. Admin Alert
             await app.send_message(ADMIN_ID, ADMIN_SUCCESS.format(anime_name=record['anime_name']))
+            
+            # 4. Broadcast
             await broadcast_new_anime(client, record['anime_name'], message.id)
         else:
+            # Agar code galat hai
             await app.send_message(ADMIN_ID, ADMIN_FAIL.format(temp_id=temp_id))
 
-# --- USER SEARCH FLOW (Spam Fix Here) ---
+# --- USER SEARCH FLOW ---
 
-# Fixed: Added 'filters.incoming' - Ye loop ko rokega!
 @app.on_message(filters.text & filters.private & filters.incoming & ~filters.command("start"))
 async def anime_search_handler(client, message):
     query = message.text.strip()
     
-    # 1. Direct DB Search
     record = find_anime_by_search_term(query)
     
     if not record:
-        # 2. Gemini Fuzzy Search
+        # Gemini Logic
         all_anime_names = [doc['anime_name'] for doc in anime_collection.find({})]
-        
         if all_anime_names:
             try:
                 prompt = GEMINI_SEARCH_PROMPT.format(query=query, anime_list=", ".join(all_anime_names))
-                response = gemini_client.models.generate_content(
-                    model=GEMINI_MODEL,
-                    contents=prompt
-                )
+                response = gemini_client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
                 corrected_name = response.text.strip()
                 
                 if corrected_name != "NONE" and corrected_name in all_anime_names:
                     record = find_anime_by_search_term(corrected_name)
                     if query.lower() != corrected_name.lower():
                         update_search_synonym(corrected_name, query)
-            except Exception as e:
-                print(f"Gemini API Error: {e}")
+            except Exception:
+                pass
 
-    # Output
     if record and record.get('channel_post_id'):
         try:
-            btn = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔗 Open Anime Link", url=record['view_link'])]
-            ])
+            # Sidha Copy Message (Koi button nahi, link post mein hai)
             sent_msg = await client.copy_message(
                 chat_id=message.chat.id,
                 from_chat_id=CHANNEL_ID,
-                message_id=record['channel_post_id'],
-                reply_markup=btn
+                message_id=record['channel_post_id']
             )
+            # Auto Delete
             asyncio.create_task(auto_delete_message(message.chat.id, sent_msg.id))
         except Exception as e:
             await message.reply_text(f"Error: {e}")
@@ -203,6 +222,6 @@ if __name__ == "__main__":
     t = Thread(target=run_web_server)
     t.daemon = True
     t.start()
-    print("🚀 Anime Finder Bot Started (Spam Fixed)...")
+    print("🚀 Bot Started (Clean Channel Code Version)...")
     app.run()
     
