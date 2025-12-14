@@ -117,7 +117,7 @@ async def search(c, m):
         names = [d['anime_name'] for d in anime_collection.find({})]
         if names:
             try:
-                res = gemini_client.models.generate_content(model="gemini-2.0-flash", contents=GEMINI_SEARCH_PROMPT.format(query=q, anime_list=", ".join(names)))
+                res = gemini_client.models.generate_content(model="gemini-2.5-flash", contents=GEMINI_SEARCH_PROMPT.format(query=q, anime_list=", ".join(names)))
                 cor = res.text.strip()
                 if cor in names: rec = find_anime_by_search_term(cor)
             except: pass
