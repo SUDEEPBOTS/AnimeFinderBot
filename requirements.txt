@@ -1,0 +1,15 @@
+requirements.txt
+# Dependencies required for Anime Finder Bot
+
+# Telegram Bot Framework (Pyrogram Client)
+pyrogram
+
+# MongoDB Driver (Database connection)
+pymongo
+
+# Google Gemini API SDK (Smart Search and Fuzzy Matching)
+google-genai
+
+# (Optional, but highly recommended for local development)
+# Environment variable management (like BOT_TOKEN, MONGO_URI)
+python-dotenv
